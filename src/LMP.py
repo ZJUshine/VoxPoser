@@ -1,7 +1,8 @@
 
-import openai
+from http import client
+import os
+from openai import OpenAI, RateLimitError, APIConnectionError
 from time import sleep
-from openai.error import RateLimitError, APIConnectionError
 from pygments import highlight
 from pygments.lexers import PythonLexer
 from pygments.formatters import TerminalFormatter
@@ -22,6 +23,10 @@ class LMP:
         self.exec_hist = ''
         self._context = None
         self._cache = DiskCache(load_cache=self._cfg['load_cache'])
+        self._client = OpenAI(
+            api_key=os.environ.get("OPENAI_API_KEY"),
+            base_url=os.environ.get("OPENAI_BASE_URL")
+            )
 
     def clear_exec_hist(self):
         self.exec_hist = ''
@@ -76,7 +81,8 @@ class LMP:
                 print('(using cache)', end=' ')
                 return self._cache[kwargs]
             else:
-                ret = openai.ChatCompletion.create(**kwargs)['choices'][0]['message']['content']
+                response = self._client.chat.completions.create(**kwargs)
+                ret = response.choices[0].message.content
                 # post processing
                 ret = ret.replace('```', '').replace('python', '').strip()
                 self._cache[kwargs] = ret
@@ -86,7 +92,8 @@ class LMP:
                 print('(using cache)', end=' ')
                 return self._cache[kwargs]
             else:
-                ret = openai.Completion.create(**kwargs)['choices'][0]['text'].strip()
+                response = self._client.completions.create(**kwargs)
+                ret = response.choices[0].text.strip()
                 self._cache[kwargs] = ret
                 return ret
 
