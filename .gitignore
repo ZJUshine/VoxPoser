@@ -1,0 +1,13 @@
+**/__pycache__/
+**/*.pyc
+**/*.pyo
+**/*.pyd
+
+
+src/cache/*
+src/visualizations/*
+
+.vscode/
+.claude/
+
+*.png

@@ -43,3 +43,5 @@
 - Do not commit API keys. Keep OpenAI credentials local to your environment or notebook cell.
 
 Use Chinese to answer.
+
+Always use Context7 MCP when I need library/API documentation, code generation, setup or configuration steps without me having to explicitly ask.

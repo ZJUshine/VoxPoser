@@ -1,7 +1,5 @@
-
-from http import client
 import os
-from openai import OpenAI, RateLimitError, APIConnectionError
+from openai import Client, RateLimitError, APIConnectionError
 from time import sleep
 from pygments import highlight
 from pygments.lexers import PythonLexer
@@ -23,10 +21,10 @@ class LMP:
         self.exec_hist = ''
         self._context = None
         self._cache = DiskCache(load_cache=self._cfg['load_cache'])
-        self._client = OpenAI(
-            api_key=os.environ.get("OPENAI_API_KEY"),
-            base_url=os.environ.get("OPENAI_BASE_URL")
-            )
+        self._client = Client(
+            api_key= os.environ.get("OPENAI_API_KEY"),
+            base_url=os.environ.get("OPENAI_API_BASE")
+        )
 
     def clear_exec_hist(self):
         self.exec_hist = ''
@@ -53,49 +51,34 @@ class LMP:
         return prompt, user_query
     
     def _cached_api_call(self, **kwargs):
-        # check whether completion endpoint or chat endpoint is used
-        if kwargs['model'] != 'gpt-3.5-turbo-instruct' and \
-            any([chat_model in kwargs['model'] for chat_model in ['gpt-3.5', 'gpt-4']]):
-            # add special prompt for chat endpoint
-            user1 = kwargs.pop('prompt')
-            new_query = '# Query:' + user1.split('# Query:')[-1]
-            user1 = ''.join(user1.split('# Query:')[:-1]).strip()
-            user1 = f"I would like you to help me write Python code to control a robot arm operating in a tabletop environment. Please complete the code every time when I give you new query. Pay attention to appeared patterns in the given context code. Be thorough and thoughtful in your code. Do not include any import statement. Do not repeat my question. Do not provide any text explanation (comment in code is okay). I will first give you the context of the code below:\n\n```\n{user1}\n```\n\nNote that x is back to front, y is left to right, and z is bottom to up."
-            assistant1 = f'Got it. I will complete what you give me next.'
-            user2 = new_query
-            # handle given context (this was written originally for completion endpoint)
-            if user1.split('\n')[-4].startswith('objects = ['):
-                obj_context = user1.split('\n')[-4]
-                # remove obj_context from user1
-                user1 = '\n'.join(user1.split('\n')[:-4]) + '\n' + '\n'.join(user1.split('\n')[-3:])
-                # add obj_context to user2
-                user2 = obj_context.strip() + '\n' + user2
-            messages=[
-                {"role": "system", "content": "You are a helpful assistant that pays attention to the user's instructions and writes good python code for operating a robot arm in a tabletop environment."},
-                {"role": "user", "content": user1},
-                {"role": "assistant", "content": assistant1},
-                {"role": "user", "content": user2},
-            ]
-            kwargs['messages'] = messages
-            if kwargs in self._cache:
-                print('(using cache)', end=' ')
-                return self._cache[kwargs]
-            else:
-                response = self._client.chat.completions.create(**kwargs)
-                ret = response.choices[0].message.content
-                # post processing
-                ret = ret.replace('```', '').replace('python', '').strip()
-                self._cache[kwargs] = ret
-                return ret
+        user1 = kwargs.pop('prompt')
+        new_query = '# Query:' + user1.split('# Query:')[-1]
+        user1 = ''.join(user1.split('# Query:')[:-1]).strip()
+        user1 = f"I would like you to help me write Python code to control a robot arm operating in a tabletop environment. Please complete the code every time when I give you new query. Pay attention to appeared patterns in the given context code. Be thorough and thoughtful in your code. Do not include any import statement. Do not repeat my question. Do not provide any text explanation (comment in code is okay). I will first give you the context of the code below:\n\n```\n{user1}\n```\n\nNote that x is back to front, y is left to right, and z is bottom to up."
+        assistant1 = f'Got it. I will complete what you give me next.'
+        user2 = new_query
+        # handle given context (this was written originally for completion endpoint)
+        if user1.split('\n')[-4].startswith('objects = ['):
+            obj_context = user1.split('\n')[-4]
+            # remove obj_context from user1
+            user1 = '\n'.join(user1.split('\n')[:-4]) + '\n' + '\n'.join(user1.split('\n')[-3:])
+            # add obj_context to user2
+            user2 = obj_context.strip() + '\n' + user2
+        messages=[
+            {"role": "system", "content": "You are a helpful assistant that pays attention to the user's instructions and writes good python code for operating a robot arm in a tabletop environment."},
+            {"role": "user", "content": user1},
+            {"role": "assistant", "content": assistant1},
+            {"role": "user", "content": user2},
+        ]
+        kwargs['messages'] = messages
+        if kwargs in self._cache:
+            print('(using cache)', end=' ')
+            return self._cache[kwargs]
         else:
-            if kwargs in self._cache:
-                print('(using cache)', end=' ')
-                return self._cache[kwargs]
-            else:
-                response = self._client.completions.create(**kwargs)
-                ret = response.choices[0].text.strip()
-                self._cache[kwargs] = ret
-                return ret
+            response = self._client.chat.completions.create(**kwargs)
+            ret = response.choices[0].message.content
+            self._cache[kwargs] = ret
+            return ret
 
     def __call__(self, query, **kwargs):
         prompt, user_query = self.build_prompt(query)
@@ -116,6 +99,12 @@ class LMP:
                 print('Retrying after 3s.')
                 sleep(3)
         print(f'*** OpenAI API call took {time.time() - start_time:.2f}s ***')
+
+        # strip markdown code fences if present (e.g. ```python ... ```)
+        if '```' in code_str:
+            lines = code_str.split('\n')
+            lines = [line for line in lines if not line.strip().startswith('```')]
+            code_str = '\n'.join(lines).strip()
 
         if self._cfg['include_context']:
             assert self._context is not None, 'context is None'

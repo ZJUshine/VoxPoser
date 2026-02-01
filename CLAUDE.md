@@ -50,3 +50,7 @@ Natural language instruction
 ## Real-World Adaptation
 
 Replace only `rlbench_env.py` with new environment wrapper (same APIs). LMP and planning modules unchanged. Suggested perception: OWL-ViT + SAM 2. Controller: OSC via Deoxys.
+
+Use Chinese to answer.
+
+Always use Context7 MCP when I need library/API documentation, code generation, setup or configuration steps without me having to explicitly ask.
