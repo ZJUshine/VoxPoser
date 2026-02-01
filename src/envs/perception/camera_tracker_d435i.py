@@ -17,12 +17,16 @@ from model.network import XMem
 from inference.inference_core import InferenceCore
 
 class CameraTracker:
-    def __init__(self):
+    def __init__(self, debug=False):
         """
         Initialize camera tracker with RealSense camera and object detection models.
-        
+
         Args:
+            debug: Whether to enable debug output (save point clouds and print debug info)
         """
+        self.debug = debug
+        self.debug_output_dir = None  # Will be set externally by RealRobotEnv
+
         # Initialize device
         try:
             if torch.cuda.is_available():
@@ -239,18 +243,35 @@ class CameraTracker:
         # Get 3D information using point cloud
         with self.objects_lock:
             depth_profile = self.latest_depth_frame.profile.as_video_stream_profile().get_intrinsics()
+            depth_scale = self.profile.get_device().first_depth_sensor().get_depth_scale()
+
+            if self.debug:
+                print(f"[DEBUG] depth_scale = {depth_scale}")
+
             pc = np.zeros((self.latest_depth_image.shape[0], self.latest_depth_image.shape[1], 3))  # Initialize with same size as Femtomega
-            
-            # Convert depth image to point cloud
+
+            # Convert depth image to point cloud (convert depth to meters using depth_scale)
             for x in range(self.latest_depth_image.shape[1]):
                 for y in range(self.latest_depth_image.shape[0]):
-                    depth = self.latest_depth_image[y, x].astype(float)
+                    depth = self.latest_depth_image[y, x].astype(float) * depth_scale
                     if depth > 0:
                         point = rs.rs2_deproject_pixel_to_point(depth_profile, [x, y], depth)
                         pc[y, x] = point
 
             self.latest_pointcloud = pc
-            
+
+            # Save scene point cloud in camera frame (debug)
+            if self.debug and self.debug_output_dir is not None:
+                scene_pc = pc.reshape(-1, 3)
+                scene_pc = scene_pc[~np.all(scene_pc == 0, axis=1)]
+                if len(scene_pc) > 0:
+                    pcd_scene = o3d.geometry.PointCloud()
+                    pcd_scene.points = o3d.utility.Vector3dVector(scene_pc)
+                    camera_frame_dir = os.path.join(self.debug_output_dir, "camera_frame")
+                    os.makedirs(camera_frame_dir, exist_ok=True)
+                    o3d.io.write_point_cloud(os.path.join(camera_frame_dir, "scene.ply"), pcd_scene)
+                    print(f"[DEBUG] Saved camera frame scene point cloud: {len(scene_pc)} points")
+
             if pc is not None and bool(self.latest_objects):
                 for object_name in self.object_names_in_cam:
                     mask2d = self.latest_objects[object_name]['mask2d']
@@ -260,13 +281,6 @@ class CameraTracker:
                     # Calculate 2D center
                     y_indices, x_indices = np.where(mask2d)
                     if len(y_indices) > 0:
-                        # centerx = int(np.mean(x_indices))
-                        # centery = int(np.mean(y_indices))
-                        
-                        # # Get 3D center from point cloud
-                        # center3d = pc[centery, centerx]
-
-
                         # Get masked point cloud
                         pc_masked = pc[mask2d]
                         # Remove zero points and outliers
@@ -290,13 +304,27 @@ class CameraTracker:
                         if len(pc_masked) >= 3:
                             pcd = o3d.geometry.PointCloud()
                             pcd.points = o3d.utility.Vector3dVector(pc_masked)
+                            # Orient normals toward camera (at origin [0,0,0] in camera frame)
                             pcd.estimate_normals()
+                            pcd.orient_normals_towards_camera_location(camera_location=np.array([0.0, 0.0, 0.0]))
                             normals = np.asarray(pcd.normals)
                             normal = np.mean(normals, axis=0)
                             normal = normal / np.linalg.norm(normal)
                             self.latest_objects[object_name]['normal'] = normal
                         else:
                             self.latest_objects[object_name]['normal'] = np.array([0, 0, 1])
+
+                        # Debug output for object in camera frame
+                        if self.debug:
+                            print(f"[DEBUG] {object_name} center3d (camera frame) = {center3d}")
+                            print(f"[DEBUG] {object_name} mask3d points = {len(pc_masked)}, bounds: min={pc_masked.min(axis=0)}, max={pc_masked.max(axis=0)}")
+
+                            if self.debug_output_dir is not None:
+                                camera_frame_dir = os.path.join(self.debug_output_dir, "camera_frame")
+                                os.makedirs(camera_frame_dir, exist_ok=True)
+                                pcd_obj = o3d.geometry.PointCloud()
+                                pcd_obj.points = o3d.utility.Vector3dVector(pc_masked)
+                                o3d.io.write_point_cloud(os.path.join(camera_frame_dir, f"{object_name}_masked.ply"), pcd_obj)
                     else:
                         self.latest_objects[object_name]['center3d'] = np.zeros(3)
                         self.latest_objects[object_name]['normal'] = np.array([0, 0, 1])

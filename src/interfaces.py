@@ -20,6 +20,7 @@ class LMP_interface():
     self._map_size = self._cfg['map_size']
     self._planner = PathPlanner(planner_config, map_size=self._map_size)
     self._controller = Controller(self._env, controller_config)
+    self._debug = getattr(env, 'debug', False)
 
     # calculate size of each voxel (resolution)
     self._resolution = (self._env.workspace_bounds_max - self._env.workspace_bounds_min) / self._map_size
@@ -71,6 +72,16 @@ class LMP_interface():
       obs_dict['_position_world'] = np.mean(obj_pc, axis=0)  # in world frame
       obs_dict['_point_cloud_world'] = obj_pc  # in world frame
       obs_dict['normal'] = normalize_vector(obj_normal.mean(axis=0))
+
+      # Debug output
+      if self._debug:
+        print(f"[DEBUG] detect('{obj_name}') _position_world = {obs_dict['_position_world']}")
+        print(f"[DEBUG] detect('{obj_name}') position (voxel) = {obs_dict['position']}")
+        # Verify voxel <-> world round-trip
+        roundtrip_world = self._voxel_to_world(obs_dict['position'])
+        print(f"[DEBUG] detect('{obj_name}') voxel->world roundtrip = {roundtrip_world}")
+        print(f"[DEBUG] detect('{obj_name}') aabb (voxel) = min: {aabb_min}, max: {aabb_max}")
+        print(f"[DEBUG] detect('{obj_name}') point cloud size = {len(obj_pc)}")
 
     object_obs = Observation(obs_dict)
     return object_obs
@@ -332,7 +343,11 @@ class LMP_interface():
         voxel_map = np.ones((self._map_size, self._map_size, self._map_size)) * self._env.get_last_gripper_action()
       elif type == 'rotation':
         voxel_map = np.zeros((self._map_size, self._map_size, self._map_size, 4))
-        voxel_map[:, :, :] = self._env.get_ee_quat()
+        # Use default rotation (vertical down if force_vertical_gripper is enabled)
+        if hasattr(self._env, 'get_default_rotation_quat'):
+            voxel_map[:, :, :] = self._env.get_default_rotation_quat()
+        else:
+            voxel_map[:, :, :] = self._env.get_ee_quat()
       else:
         raise ValueError('Unknown voxel map type: {}'.format(type))
       voxel_map = VoxelIndexingWrapper(voxel_map)

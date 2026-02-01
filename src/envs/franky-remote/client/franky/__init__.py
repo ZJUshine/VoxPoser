@@ -5,7 +5,7 @@ import types
 
 # Configuration
 # Users can set these environment variables to point to their RT machine
-SERVER_IP = os.environ.get("FRANKY_SERVER_IP", "localhost")
+SERVER_IP = os.environ.get("FRANKY_SERVER_IP", "172.16.0.48")
 SERVER_PORT = int(os.environ.get("FRANKY_SERVER_PORT", 18861))
 
 # Global connection object

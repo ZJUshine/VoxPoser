@@ -101,10 +101,7 @@ class LMP:
         print(f'*** OpenAI API call took {time.time() - start_time:.2f}s ***')
 
         # strip markdown code fences if present (e.g. ```python ... ```)
-        if '```' in code_str:
-            lines = code_str.split('\n')
-            lines = [line for line in lines if not line.strip().startswith('```')]
-            code_str = '\n'.join(lines).strip()
+        code_str = code_str.replace('```', '').replace('python', '').strip()
 
         if self._cfg['include_context']:
             assert self._context is not None, 'context is None'
