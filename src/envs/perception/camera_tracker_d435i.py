@@ -5,7 +5,7 @@ import cv2
 import torch
 import numpy as np
 from transformers import Owlv2Processor, Owlv2ForObjectDetection
-from ultralytics import SAM, YOLO
+from ultralytics import SAM
 import sys
 import os
 import open3d as o3d
@@ -17,16 +17,7 @@ from model.network import XMem
 from inference.inference_core import InferenceCore
 
 class CameraTracker:
-    def __init__(self, debug=False):
-        """
-        Initialize camera tracker with RealSense camera and object detection models.
-
-        Args:
-            debug: Whether to enable debug output (save point clouds and print debug info)
-        """
-        self.debug = debug
-        self.debug_output_dir = None  # Will be set externally by RealRobotEnv
-
+    def __init__(self):
         # Initialize device
         try:
             if torch.cuda.is_available():
@@ -86,8 +77,6 @@ class CameraTracker:
         self.xmem_model.load_weights(weights)
         self.xmem_model.eval()
         self.xmem_model.to(self.device)
-
-        self.yolo_model = YOLO('/mnt/data/models/yolo11x.pt')
 
         # Initialize variables
         self.latest_color_frame = None
@@ -242,11 +231,19 @@ class CameraTracker:
     def process_3d(self):
         # Get 3D information using point cloud
         with self.objects_lock:
+            if self.latest_depth_frame is None or self.latest_color_frame is None:
+                # Capture frames if not yet available
+                frames = self.pipeline.wait_for_frames()
+                aligned = self.align.process(frames)
+                self.latest_depth_frame = aligned.get_depth_frame()
+                self.latest_color_frame = aligned.get_color_frame()
+                if not self.latest_depth_frame or not self.latest_color_frame:
+                    return
+                self.latest_depth_image = np.asanyarray(self.latest_depth_frame.get_data())
+                self.latest_color_image = np.asanyarray(self.latest_color_frame.get_data())
+
             depth_profile = self.latest_depth_frame.profile.as_video_stream_profile().get_intrinsics()
             depth_scale = self.profile.get_device().first_depth_sensor().get_depth_scale()
-
-            if self.debug:
-                print(f"[DEBUG] depth_scale = {depth_scale}")
 
             pc = np.zeros((self.latest_depth_image.shape[0], self.latest_depth_image.shape[1], 3))  # Initialize with same size as Femtomega
 
@@ -259,18 +256,6 @@ class CameraTracker:
                         pc[y, x] = point
 
             self.latest_pointcloud = pc
-
-            # Save scene point cloud in camera frame (debug)
-            if self.debug and self.debug_output_dir is not None:
-                scene_pc = pc.reshape(-1, 3)
-                scene_pc = scene_pc[~np.all(scene_pc == 0, axis=1)]
-                if len(scene_pc) > 0:
-                    pcd_scene = o3d.geometry.PointCloud()
-                    pcd_scene.points = o3d.utility.Vector3dVector(scene_pc)
-                    camera_frame_dir = os.path.join(self.debug_output_dir, "camera_frame")
-                    os.makedirs(camera_frame_dir, exist_ok=True)
-                    o3d.io.write_point_cloud(os.path.join(camera_frame_dir, "scene.ply"), pcd_scene)
-                    print(f"[DEBUG] Saved camera frame scene point cloud: {len(scene_pc)} points")
 
             if pc is not None and bool(self.latest_objects):
                 for object_name in self.object_names_in_cam:
@@ -314,17 +299,6 @@ class CameraTracker:
                         else:
                             self.latest_objects[object_name]['normal'] = np.array([0, 0, 1])
 
-                        # Debug output for object in camera frame
-                        if self.debug:
-                            print(f"[DEBUG] {object_name} center3d (camera frame) = {center3d}")
-                            print(f"[DEBUG] {object_name} mask3d points = {len(pc_masked)}, bounds: min={pc_masked.min(axis=0)}, max={pc_masked.max(axis=0)}")
-
-                            if self.debug_output_dir is not None:
-                                camera_frame_dir = os.path.join(self.debug_output_dir, "camera_frame")
-                                os.makedirs(camera_frame_dir, exist_ok=True)
-                                pcd_obj = o3d.geometry.PointCloud()
-                                pcd_obj.points = o3d.utility.Vector3dVector(pc_masked)
-                                o3d.io.write_point_cloud(os.path.join(camera_frame_dir, f"{object_name}_masked.ply"), pcd_obj)
                     else:
                         self.latest_objects[object_name]['center3d'] = np.zeros(3)
                         self.latest_objects[object_name]['normal'] = np.array([0, 0, 1])
@@ -353,29 +327,6 @@ class CameraTracker:
 
             # Visualize point clouds, center sphere, and normal vector
             o3d.visualization.draw_geometries([pcd, sphere, line_set])
-
-    def get_current_objects(self):
-        """Use YOLO to get current objects"""
-        frames = self.pipeline.wait_for_frames()
-        self.aligned_frames = self.align.process(frames)
-        self.latest_depth_frame = self.aligned_frames.get_depth_frame()
-        self.latest_color_frame = self.aligned_frames.get_color_frame()
-            
-        if not self.latest_depth_frame or not self.latest_color_frame:
-            return
-            
-        self.latest_depth_image = np.asanyarray(self.latest_depth_frame.get_data())
-        self.latest_color_image = np.asanyarray(self.latest_color_frame.get_data())
-
-        results = self.yolo_model(self.latest_color_image, verbose=False)
-        
-        current_objects = set()
-        if results is not None:
-            for result in results:
-                if result.boxes is not None:
-                    for i in result.boxes.cls:
-                        current_objects.add(result.names[int(i)])
-        return list(current_objects)
 
     def get_latest_frames(self):
         """Get the latest color and depth images"""

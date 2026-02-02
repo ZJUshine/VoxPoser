@@ -99,26 +99,6 @@ class RealRobotEnv():
 
         self.visualizer = visualizer
 
-        self.debug = debug
-
-        # Create debug output directory
-        if self.debug:
-            self.debug_output_dir = os.path.join(os.path.dirname(__file__), '..', '..', 'debug_output')
-            os.makedirs(self.debug_output_dir, exist_ok=True)
-            os.makedirs(os.path.join(self.debug_output_dir, 'camera_frame'), exist_ok=True)
-            os.makedirs(os.path.join(self.debug_output_dir, 'robot_frame'), exist_ok=True)
-            os.makedirs(os.path.join(self.debug_output_dir, 'segmentation'), exist_ok=True)
-
-            # Print calibration matrix info
-            R = self.T_camera_to_base[:3, :3]
-            det_R = np.linalg.det(R)
-            print(f"[DEBUG] T_camera_to_base det(R) = {det_R}")
-            camera_origin = self.T_camera_to_base[:3, 3]
-            print(f"[DEBUG] camera origin in robot frame = {camera_origin}")
-            print(f"[DEBUG] T_camera_to_base =\n{self.T_camera_to_base}")
-        else:
-            self.debug_output_dir = None
-
         # Define workspace bounds (in meters)
         self.workspace_bounds_max = np.array([1.0, 1.0, 1.0])
         self.workspace_bounds_min = np.array([-1.0, -1.0, -0.1])
@@ -127,10 +107,7 @@ class RealRobotEnv():
             self.visualizer.update_bounds(self.workspace_bounds_min, self.workspace_bounds_max)
 
 
-        self.tracker = CameraTracker(debug=self.debug)
-        if self.debug:
-            self.tracker.debug_output_dir = self.debug_output_dir
-        self.objects_on_table = self.get_object_names()
+        self.tracker = CameraTracker()
         self.cam2robot = CoordinateTransformer(self.T_camera_to_base)
 
         self.gripper_speed = 0.02
@@ -192,10 +169,6 @@ class RealRobotEnv():
             raise KeyError('calibration_result.json missing T_cam_base')
         return T_camera_to_base
 
-    def get_object_names(self):
-        """Returns list of detected object names"""
-        return self.tracker.get_current_objects()
-        
     def get_3d_obs_by_name(self, name):
         """Get 3D position of specified object"""
         target = [name]
@@ -217,12 +190,7 @@ class RealRobotEnv():
             image = self.tracker.latest_color_image.copy()
             mask_2d = dict_objects[name]['mask2d']
             image[mask_2d > 0] = image[mask_2d > 0] * 0.7 + np.array((255, 255, 0), dtype=np.uint8) * 0.3
-            if self.debug and self.debug_output_dir is not None:
-                seg_dir = os.path.join(self.debug_output_dir, 'segmentation')
-                os.makedirs(seg_dir, exist_ok=True)
-                cv2.imwrite(os.path.join(seg_dir, f'{name}_detection.png'), image)
-            else:
-                cv2.imwrite(f'{name}_detection.png', image)
+            cv2.imwrite(f'{name}_detection.png', image)
             self.first_flag_dict[name] = False
 
         # Bug 1 fix: Return full mask3d point cloud (not just center3d)
@@ -232,53 +200,15 @@ class RealRobotEnv():
         # Note: Removed forced z-minimum threshold (0.45) as it was causing ~0.5m offset
         # Safety limits should be handled by the controller/planner instead
 
-        # Bug 2 fix: Transform normal from camera frame to robot frame using rotation matrix
+        # Transform normal from camera frame to robot frame using rotation matrix,
+        # then ensure it points upward relative to robot base (+Z direction)
         normal_camera = dict_objects[name]['normal'].reshape(1, 3)
         R = self.T_camera_to_base[:3, :3]
         normal_robot = (R @ normal_camera.T).T  # (1, 3)
         normal_robot = normal_robot / np.linalg.norm(normal_robot)
-
-        if self.debug:
-            center_camera = dict_objects[name]['center3d']
-            center_robot = np.mean(mask3d_robot, axis=0)
-            print(f"[DEBUG] {name} center3d (camera frame) = {center_camera}")
-            print(f"[DEBUG] {name} center3d (robot frame) = {center_robot}")
-            print(f"[DEBUG] {name} mask3d points = {len(mask3d_robot)}, bounds: min={mask3d_robot.min(axis=0)}, max={mask3d_robot.max(axis=0)}")
-            print(f"[DEBUG] {name} normal (camera frame) = {dict_objects[name]['normal']}")
-            print(f"[DEBUG] {name} normal (robot frame) = {normal_robot.flatten()}")
-
-            # Verify normal direction: should point upward (positive z) for horizontal surfaces
-            # or toward camera for vertical surfaces
-            normal_z = normal_robot.flatten()[2]
-            print(f"[DEBUG] {name} normal z-component = {normal_z:.4f} (positive=up, negative=down)")
-
-            if self.debug_output_dir is not None:
-                robot_frame_dir = os.path.join(self.debug_output_dir, 'robot_frame')
-                os.makedirs(robot_frame_dir, exist_ok=True)
-
-                # Save object point cloud
-                pcd_obj = o3d.geometry.PointCloud()
-                pcd_obj.points = o3d.utility.Vector3dVector(mask3d_robot)
-                o3d.io.write_point_cloud(os.path.join(robot_frame_dir, f"{name}_masked.ply"), pcd_obj)
-
-                # Save normal vector visualization as a line
-                normal_length = 0.1  # 10cm arrow
-                normal_start = center_robot
-                normal_end = center_robot + normal_robot.flatten() * normal_length
-                normal_points = np.array([normal_start, normal_end])
-                normal_lines = o3d.geometry.LineSet()
-                normal_lines.points = o3d.utility.Vector3dVector(normal_points)
-                normal_lines.lines = o3d.utility.Vector2iVector([[0, 1]])
-                normal_lines.colors = o3d.utility.Vector3dVector([[1, 0, 0]])  # Red
-                o3d.io.write_line_set(os.path.join(robot_frame_dir, f"{name}_normal.ply"), normal_lines)
-
-                # Also save center point as a small sphere for reference
-                center_sphere = o3d.geometry.TriangleMesh.create_sphere(radius=0.01)
-                center_sphere.translate(center_robot)
-                center_sphere.paint_uniform_color([0, 1, 0])  # Green
-                o3d.io.write_triangle_mesh(os.path.join(robot_frame_dir, f"{name}_center.ply"), center_sphere)
-
-                print(f"[DEBUG] Saved {name} point cloud, normal line, and center sphere to {robot_frame_dir}")
+        # Flip normal if it points downward (negative Z in robot frame)
+        if normal_robot[0, 2] < 0:
+            normal_robot = -normal_robot
 
         return mask3d_robot, normal_robot
     
@@ -286,7 +216,6 @@ class RealRobotEnv():
         """
         Get 3D positions and colors of all objects in scene.
         """
-        _ = self.tracker.get_latest_objects(self.objects_on_table)
         while self.tracker.latest_pointcloud is None:
             self.tracker.process_3d()
             time.sleep(1)
@@ -297,37 +226,12 @@ class RealRobotEnv():
 
         points = self.cam2robot.camera_to_robot(points)
 
-        if self.debug:
-            # Filter out zero points for statistics
-            valid_mask = ~np.all(points == 0, axis=1)
-            valid_points = points[valid_mask]
-            print(f"[DEBUG] scene points before filter: {len(valid_points)}, bounds: min={valid_points.min(axis=0)}, max={valid_points.max(axis=0)}")
-
-            if self.debug_output_dir is not None:
-                robot_frame_dir = os.path.join(self.debug_output_dir, 'robot_frame')
-                os.makedirs(robot_frame_dir, exist_ok=True)
-                pcd_before = o3d.geometry.PointCloud()
-                pcd_before.points = o3d.utility.Vector3dVector(valid_points)
-                pcd_before.colors = o3d.utility.Vector3dVector(colors[valid_mask].astype(float) / 255.0)
-                o3d.io.write_point_cloud(os.path.join(robot_frame_dir, "scene_before_filter.ply"), pcd_before)
-
         chosen_idx_x = (points[:, 0] > self.workspace_bounds_min[0]) & (points[:, 0] < self.workspace_bounds_max[0])
         chosen_idx_y = (points[:, 1] > self.workspace_bounds_min[1]) & (points[:, 1] < self.workspace_bounds_max[1])
         chosen_idx_z = (points[:, 2] > self.workspace_bounds_min[2]) & (points[:, 2] < self.workspace_bounds_max[2])
         points = points[(chosen_idx_x & chosen_idx_y & chosen_idx_z)]
         colors = colors[(chosen_idx_x & chosen_idx_y & chosen_idx_z)]
 
-        if self.debug:
-            print(f"[DEBUG] scene points after filter: {len(points)}")
-            if len(points) > 0:
-                print(f"[DEBUG] filtered bounds: min={points.min(axis=0)}, max={points.max(axis=0)}")
-
-            if self.debug_output_dir is not None and len(points) > 0:
-                robot_frame_dir = os.path.join(self.debug_output_dir, 'robot_frame')
-                pcd_after = o3d.geometry.PointCloud()
-                pcd_after.points = o3d.utility.Vector3dVector(points)
-                pcd_after.colors = o3d.utility.Vector3dVector(colors.astype(float) / 255.0)
-                o3d.io.write_point_cloud(os.path.join(robot_frame_dir, "scene_after_filter.ply"), pcd_after)
 
         if len(points) == 0:
             return np.zeros((1,3)), np.zeros((1,3), dtype=np.uint8)

@@ -73,15 +73,6 @@ class LMP_interface():
       obs_dict['_point_cloud_world'] = obj_pc  # in world frame
       obs_dict['normal'] = normalize_vector(obj_normal.mean(axis=0))
 
-      # Debug output
-      if self._debug:
-        print(f"[DEBUG] detect('{obj_name}') _position_world = {obs_dict['_position_world']}")
-        print(f"[DEBUG] detect('{obj_name}') position (voxel) = {obs_dict['position']}")
-        # Verify voxel <-> world round-trip
-        roundtrip_world = self._voxel_to_world(obs_dict['position'])
-        print(f"[DEBUG] detect('{obj_name}') voxel->world roundtrip = {roundtrip_world}")
-        print(f"[DEBUG] detect('{obj_name}') aabb (voxel) = min: {aabb_min}, max: {aabb_max}")
-        print(f"[DEBUG] detect('{obj_name}') point cloud size = {len(obj_pc)}")
 
     object_obs = Observation(obs_dict)
     return object_obs

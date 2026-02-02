@@ -13,3 +13,5 @@ src/visualizations/*
 *.png
 
 debug_output/*
+
+*.backup
